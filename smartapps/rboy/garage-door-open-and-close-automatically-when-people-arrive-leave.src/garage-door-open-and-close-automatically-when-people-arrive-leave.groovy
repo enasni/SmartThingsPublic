@@ -11,16 +11,19 @@
 */ 
 
 def clientVersion() {
-    return "01.05.00"
+    return "01.06.02"
 }
 
 /*
 * Garage Door Open and Close
 *
-* Copyright RBoy
+* Copyright RBoy Apps
 * Redistribution of any changes or code is not allowed without permission
 *
 * Change Log
+* 2017-5-26 - (v 01.06.02) Multiple SMS numbers are now separate by a *
+* 2017-4-29 - (v01.06.01) Patch for delayed opening of garage doors
+* 2017-4-22 - (v01.06.00) Added support for delayed opening of garage doors
 * 2016-11-5 - Added support for automatic code update notifications and fixed an issue with sms
 * 2016-10-7 - Added support for Operating Schedule for arrival and departure
 * 2016-8-17 - Added workaround for ST contact address book bug
@@ -39,7 +42,7 @@ def clientVersion() {
 definition(
     name: "Garage Door Open and Close Automatically when People Arrive/Leave",
     namespace: "rboy",
-    author: "RBoy",
+    author: "RBoy Apps",
     description: "Open a garage door when someone arrives, Close a garage door when someone leaves",
     category: "Convenience",
     iconUrl: "https://s3.amazonaws.com/smartapp-icons/Meta/garage_contact.png",
@@ -54,6 +57,7 @@ def mainPage() {
         section("Open Garage Doors When People Arrive", hidden: false, hideable: true) {
             input "arrives", "capability.presenceSensor", title: "When one of these arrive", description: "Which people arrive?", multiple: true, required: false
             input "doorsOpen", "capability.doorControl", title: "Open these garage door(s)?", required: false, multiple: true
+            input "doorsOpenDelay", "number", title: "...after these seconds", required: false
             input "arriveSwitches", "capability.switch", title: "...and turn on these switches", description: "Turn on lights", multiple: true, required: false, submitOnChange: true
             if (arriveSwitches) {
                 input "arriveAfterDark", "bool", title: "...only if it's getting dark outside", description: "Turn on lights at night", required: false
@@ -123,7 +127,7 @@ def mainPage() {
         }
         section("Notifications") {
             input("recipients", "contact", title: "Send notifications to (optional)", multiple: true, required: false) {
-                paragraph "You can enter multiple phone numbers to send an SMS to by separating them with a '+'. E.g. 5551234567+4447654321"
+                paragraph "You can enter multiple phone numbers to send an SMS to by separating them with a '*'. E.g. 5551234567*4447654321"
                 input "sms", "phone", title: "Send SMS to (phone number)", required: false
                 input "push", "bool", title: "Send push notification", defaultValue: "true"
             }
@@ -160,6 +164,31 @@ def initialize() {
     schedule("0 0 " + randomHour + " ? * " + randomDayOfWeek, checkForCodeUpdate) // Check for code updates once a week at a random day and time between 10am and 6pm
 }
 
+def delayOpenDoors(data) {
+    log.debug "Delayed arriveHandler presenceId: $data.deviceNetworkId, type: $data.type"
+    
+    def device = settings.arrives.find { it.deviceNetworkId == data.deviceNetworkId }
+    log.trace "Presence sensor: $device.displayName"
+    
+    def msg = "$delayOpenDoors seconds elapsed"
+    
+    if (device.currentPresence != "present") {
+        msg += ", $device.displayName not present, skipping opening doors"
+    } else {
+        for(door in doorsOpen) {
+            if (door.currentDoor == "closed") {
+                msg += ", opening $door"
+                door.open()
+            } else {
+                msg += ", $door already open"
+            }
+        }
+    }
+
+    log.debug(msg)
+    sendNotifications(msg)
+}
+
 def arriveHandler(evt)
 {
     log.debug "arriveHandler $evt.displayName, $evt.name: $evt.value"
@@ -170,12 +199,18 @@ def arriveHandler(evt)
     }
 
     def msg = "$evt.displayName arrived"
-    for(door in doorsOpen) {
-        if (door.currentDoor == "closed") {
-            msg += ", opening $door"
-            door.open()
-        } else {
-            msg += ", $door already open"
+    
+    if (doorsOpenDelay) {
+        msg += ", opening doors after $doorsOpenDelay seconds"
+        runIn(doorsOpenDelay, "delayOpenDoors", [data: [deviceNetworkId: evt.device.deviceNetworkId, type: evt.value]])        
+    } else {
+        for(door in doorsOpen) {
+            if (door.currentDoor == "closed") {
+                msg += ", opening $door"
+                door.open()
+            } else {
+                msg += ", $door already open"
+            }
         }
     }
 
@@ -221,7 +256,7 @@ def leaveHandler(evt)
 
 private void sendText(number, message) {
     if (number) {
-        def phones = number.split("\\+")
+        def phones = number.split("\\*")
         for (phone in phones) {
             sendSms(phone, message)
         }
@@ -250,7 +285,7 @@ private void sendNotifications(message) {
 // settings."userEndTime${x}${i}"
 // settings."userDayOfWeek${x}${i}"
 private checkSchedule(def i, def x) {
-    log.debug("Checking operating schedule $x for user $i")
+    log.trace("Checking operating schedule $x for user $i")
 
     TimeZone timeZone = location.timeZone
     if (!timeZone) {
@@ -265,7 +300,7 @@ private checkSchedule(def i, def x) {
     def currentDT = new Date(now())
 
     // some debugging in order to make sure things are working correclty
-    log.debug "Current time: ${currentDT.format("EEE MMM dd yyyy HH:mm z", timeZone)}"
+    log.trace "Current time: ${currentDT.format("EEE MMM dd yyyy HH:mm z", timeZone)}"
 
     // Check if we are within operating times
     if (settings."userStartTime${x}${i}" != null && settings."userEndTime${x}${i}" != null) {
@@ -273,11 +308,11 @@ private checkSchedule(def i, def x) {
         def scheduledEnd = timeToday(settings."userEndTime${x}${i}", timeZone)
 
         if (scheduledEnd <= scheduledStart) { // End time is next day
-            log.debug "End time is before start time, assuming it is the next day"
+            log.trace "End time is before start time, assuming it is the next day"
             scheduledEnd = scheduledEnd.next() // Get the time for tomorrow
         }
 
-        log.debug("Operating Start ${scheduledStart.format("EEE MMM dd yyyy HH:mm z", timeZone)}, End ${scheduledEnd.format("EEE MMM dd yyyy HH:mm z", timeZone)}")
+        log.trace("Operating Start ${scheduledStart.format("EEE MMM dd yyyy HH:mm z", timeZone)}, End ${scheduledEnd.format("EEE MMM dd yyyy HH:mm z", timeZone)}")
 
         if (currentDT < scheduledStart || currentDT > scheduledEnd) {
             log.info("Outside operating time schedule")
@@ -287,7 +322,7 @@ private checkSchedule(def i, def x) {
 
     // Check the condition under which we want this to run now
     // This set allows the most flexibility.
-    log.debug("Operating DOW(s): ${settings."userDayOfWeek${x}${i}"}")
+    log.trace("Operating DOW(s): ${settings."userDayOfWeek${x}${i}"}")
 
     if(settings."userDayOfWeek${x}${i}" == null) {
         log.warn "Day of week not specified for operating schedule $x for user $i, assuming no schedule set, so we are within schedule"
@@ -323,7 +358,7 @@ private checkSchedule(def i, def x) {
 }
 
 def checkForCodeUpdate(evt) {
-    log.trace "Getting latest version data from the RBoy server"
+    log.trace "Getting latest version data from the RBoy Apps server"
     
     def appName = "Garage Door Open and Close Automatically when People Arrive/Leave"
     def serverUrl = "http://smartthings.rboyapps.com"
@@ -334,7 +369,7 @@ def checkForCodeUpdate(evt) {
             uri: serverUrl,
             path: serverPath
         ]) { ret ->
-            log.trace "Received response from RBoyServer, headers=${ret.headers.'Content-Type'}, status=$ret.status"
+            log.trace "Received response from RBoy Apps Server, headers=${ret.headers.'Content-Type'}, status=$ret.status"
             //ret.headers.each {
             //    log.trace "${it.name} : ${it.value}"
             //}
@@ -345,7 +380,7 @@ def checkForCodeUpdate(evt) {
                 // Check for app version updates
                 def appVersion = ret.data?."$appName"
                 if (appVersion > clientVersion()) {
-                    def msg = "New version of app ${app.label} available: $appVersion, version: ${clientVersion()}.\nPlease visit $serverUrl to get the latest version."
+                    def msg = "New version of app ${app.label} available: $appVersion, current version: ${clientVersion()}.\nPlease visit $serverUrl to get the latest version."
                     log.info msg
                     if (!disableUpdateNotifications) {
                         sendPush(msg)
@@ -363,7 +398,7 @@ def checkForCodeUpdate(evt) {
                             def deviceName = device?.currentValue("dhName")
                             def deviceVersion = ret.data?."$deviceName"
                             if (deviceVersion && (deviceVersion > device?.currentValue("codeVersion"))) {
-                                def msg = "New version of device ${device?.displayName} available: $deviceVersion, version: ${device?.currentValue("codeVersion")}.\nPlease visit $serverUrl to get the latest version."
+                                def msg = "New version of device ${device?.displayName} available: $deviceVersion, current version: ${device?.currentValue("codeVersion")}.\nPlease visit $serverUrl to get the latest version."
                                 log.info msg
                                 if (!disableUpdateNotifications) {
                                     sendPush(msg)
