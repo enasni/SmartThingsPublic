@@ -44,7 +44,7 @@ definition(
     namespace: "rboy",
     author: "RBoy Apps",
     description: "Open a garage door when someone arrives, Close a garage door when someone leaves",
-    category: "Convenience",
+    category: "Safety & Security",
     iconUrl: "https://s3.amazonaws.com/smartapp-icons/Meta/garage_contact.png",
     iconX2Url: "https://s3.amazonaws.com/smartapp-icons/Meta/garage_contact@2x.png")
 
